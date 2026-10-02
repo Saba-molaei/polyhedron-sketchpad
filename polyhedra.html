@@ -1,0 +1,865 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Polyhedron Sketchpad</title>
+<style>
+  :root {
+    --bg: #f4f3ef; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6a66;
+    --line: #dcdad3; --accent: #e8590c; --btn: #f0eee8; --btn-on: #1d1d1b;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font: 13px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column;
+  }
+  header {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;
+    padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  header h1 { font-size: 14px; margin: 0 6px 0 0; font-weight: 650; }
+  .grp { display: flex; align-items: center; gap: 5px; }
+  .grp > span.lbl { color: var(--muted); font-size: 12px; }
+  select, button, input[type=file] { font: inherit; }
+  select { padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: #fff; max-width: 250px; }
+  button {
+    padding: 4px 9px; border: 1px solid var(--line); border-radius: 6px;
+    background: var(--btn); color: var(--ink); cursor: pointer; white-space: nowrap;
+  }
+  button:hover { border-color: #b9b6ad; }
+  button.on { background: var(--btn-on); color: #fff; border-color: var(--btn-on); }
+  button.arm { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .sw {
+    width: 22px; height: 22px; border-radius: 50%; padding: 0;
+    border: 2px solid #fff; box-shadow: 0 0 0 1px var(--line);
+  }
+  .sw.on { box-shadow: 0 0 0 2px var(--ink); }
+  input[type=color] { width: 26px; height: 24px; padding: 0; border: none; background: none; cursor: pointer; }
+  input[type=range] { width: 90px; }
+  main {
+    flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 10px;
+  }
+  .view {
+    position: relative; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; overflow: hidden; min-height: 300px;
+  }
+  .view canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  .view .tag {
+    position: absolute; left: 10px; top: 8px; font-size: 12px; color: var(--muted);
+    pointer-events: none; background: rgba(255,255,255,.8); padding: 1px 6px; border-radius: 4px;
+  }
+  footer {
+    display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 16px;
+    padding: 0 14px 8px; color: var(--muted); font-size: 12px;
+  }
+  #status { color: var(--ink); }
+  @media (max-width: 820px) {
+    main { grid-template-columns: 1fr; grid-auto-rows: minmax(320px, 1fr); }
+    body { height: auto; min-height: 100%; }
+  }
+</style>
+<script src="models.js"></script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<header>
+  <h1>Polyhedron Sketchpad</h1>
+  <div class="grp"><select id="model"></select></div>
+  <div class="grp" id="swatches"><span class="lbl">Pen</span></div>
+  <div class="grp"><span class="lbl">Size</span><input id="size" type="range" min="1" max="10" value="3"></div>
+  <div class="grp">
+    <button id="pen" class="on" title="Pen (P)">Pen</button>
+    <button id="eraser" title="Eraser: removes whole strokes (E)">Eraser</button>
+    <button id="rotate" title="Left-drag rotates the 3D view / pans the 2D view (R, or hold Space)">Rotate/Pan</button>
+  </div>
+  <div class="grp">
+    <button id="undo" title="Undo (⌘Z)">Undo</button>
+    <button id="redo" title="Redo (⇧⌘Z)">Redo</button>
+    <button id="clear">Clear all</button>
+  </div>
+  <div class="grp">
+    <button id="pick" title="Click a face in either view to make it the outer face of the Schlegel diagram">Set outer face…</button>
+    <span class="lbl">Eye</span><input id="eye" type="range" min="10" max="97" value="80" title="Distance of the projection point from the outer face">
+    <button id="numbers" class="on">Face numbers</button>
+    <button id="reset">Reset views</button>
+  </div>
+  <div class="grp">
+    <button id="export">Export JSON</button>
+    <button id="import">Import JSON</button>
+    <button id="png">Save PNGs</button>
+    <input id="file" type="file" accept="application/json,.json" hidden>
+  </div>
+</header>
+<main>
+  <div class="view" id="v3"><span class="tag">3D polyhedron</span></div>
+  <div class="view" id="v2"><canvas id="c2"></canvas><span class="tag">Schlegel diagram</span></div>
+</main>
+<footer>
+  <span id="status"></span>
+  <span>Left-drag: draw · Right-drag: rotate (3D) / pan (2D) · Wheel: zoom · Space: hold to rotate/pan · 1–6: colours · ⌘Z: undo</span>
+</footer>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const MODELS = window.POLYHEDRA;
+const PLATONIC = ['tet', 'cube', 'oct', 'dod', 'ico'];
+const ARCHIMEDEAN = ['tr_tet', 'cubo', 'tr_cube', 'tr_oct', 'rh_cubo', 'tr_cubo', 'sn_cube',
+  'icosid', 'tr_dod', 'tr_ico', 'rh_icosid', 'tr_icosid', 'sn_dod'];
+const COLORS = ['#111111', '#e03131', '#1c7ed6', '#2f9e44', '#f08c00', '#9c36b5'];
+const FACE_FILL = { 3: '#fbe3b8', 4: '#cfe6f5', 5: '#d4eecb', 6: '#f6d0d0', 8: '#e2d9f5', 10: '#f2e9bf' };
+const POLY_NAME = { 3: 'triangle', 4: 'quadrilateral', 5: 'pentagon', 6: 'hexagon', 8: 'octagon', 10: 'decagon' };
+const W3 = 0.006;    // 3D stroke width per size step, in model units (circumradius = 1)
+const W2 = 1.3;      // 2D stroke width per size step, in CSS px
+const STORE_KEY = 'polyhedron-sketchpad-v1';
+
+// ---------- small vector helpers (arrays) ----------
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+const mul = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const unit = a => mul(a, 1 / Math.hypot(...a));
+const cross2 = (a, b) => a[0] * b[1] - a[1] * b[0];
+
+// ---------- state ----------
+const ui = { color: COLORS[0], size: 3, tool: 'pen', rotate: false, space: false, numbers: true, picking: false };
+let M = null;          // current model runtime
+let hover = -1;        // hovered face index
+const store = loadStore();
+
+function loadStore() {
+  try { return JSON.parse(localStorage.getItem(STORE_KEY)) || {}; } catch { return {}; }
+}
+function saveStore() {
+  if (!M) return;
+  store[M.def.id] = {
+    outer: M.outer, eye: M.eye,
+    strokes: M.strokes.map(s => ({ c: s.color, s: s.size, p: s.pts.map(p => [p[0], +p[1].toFixed(5), +p[2].toFixed(5)]) })),
+  };
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(store)); } catch { /* storage unavailable */ }
+}
+
+// ---------- model geometry ----------
+function buildModel(def) {
+  const V = def.v;
+  const faces = def.f.map((idx, i) => {
+    const P = idx.map(k => V[k]);
+    const c = mul(P.reduce(add, [0, 0, 0]), 1 / P.length);
+    let n = [0, 0, 0];
+    P.forEach((p, k) => { n = add(n, cross(p, P[(k + 1) % P.length])); });
+    n = unit(n);
+    const u = unit(sub(P[1], P[0])), w = cross(n, u);
+    const loc = P.map(p => { const r = sub(p, c); return [dot(r, u), dot(r, w)]; });
+    let inr = Infinity;  // inradius, for label sizing
+    loc.forEach((a, k) => {
+      const b = loc[(k + 1) % loc.length], e = [b[0] - a[0], b[1] - a[1]];
+      inr = Math.min(inr, Math.abs(cross2(e, [-a[0], -a[1]])) / Math.hypot(...e));
+    });
+    return { i, idx, c, n, d: dot(n, c), u, w, loc, inr, fill: FACE_FILL[idx.length] || '#eeeeee' };
+  });
+  const edgeFaces = new Map();
+  faces.forEach(f => f.idx.forEach((a, k) => {
+    const b = f.idx[(k + 1) % f.idx.length], key = a < b ? a + ',' + b : b + ',' + a;
+    if (!edgeFaces.has(key)) edgeFaces.set(key, []);
+    edgeFaces.get(key).push(f.i);
+  }));
+  return { def, V, faces, edgeFaces };
+}
+
+const toWorld = (fi, a, b) => { const f = M.faces[fi]; return add(f.c, add(mul(f.u, a), mul(f.w, b))); };
+const toLocal = (fi, p) => { const f = M.faces[fi], r = sub(p, f.c); return [dot(r, f.u), dot(r, f.w)]; };
+
+function sharedEdge(fa, fb) {
+  const idx = M.faces[fa].idx;
+  for (let k = 0; k < idx.length; k++) {
+    const a = idx[k], b = idx[(k + 1) % idx.length], key = a < b ? a + ',' + b : b + ',' + a;
+    if (M.edgeFaces.get(key).includes(fb)) return [M.V[a], M.V[b]];
+  }
+  return null;
+}
+
+// Point on segment AB closest to the line through P, Q (clamped to the segment).
+function edgeCrossing(A, B, P, Q) {
+  const d1 = sub(B, A), d2 = sub(Q, P), r = sub(A, P);
+  const a = dot(d1, d1), e = dot(d2, d2), b = dot(d1, d2), c = dot(d1, r), f = dot(d2, r);
+  const den = a * e - b * b;
+  let s = den > 1e-12 ? (b * f - c * e) / den : 0.5;
+  s = Math.min(1, Math.max(0, s));
+  return add(A, mul(d1, s));
+}
+
+// ---------- texture atlas: one cell per face; strokes live here for the 3D view ----------
+function buildAtlas() {
+  const F = M.faces.length, g = Math.ceil(Math.sqrt(F));
+  const cell = Math.min(512, Math.floor(2048 / g)), size = g * cell;
+  let R = 0;
+  M.faces.forEach(f => f.loc.forEach(p => { R = Math.max(R, Math.hypot(...p)); }));
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  M.faces.forEach(f => { f.cx = (f.i % g + 0.5) * cell; f.cy = (Math.floor(f.i / g) + 0.5) * cell; });
+  M.atlas = { canvas, ctx: canvas.getContext('2d'), cell, size, s: (cell / 2 - 3) / R };
+}
+const cellPx = (f, a, b) => [f.cx + a * M.atlas.s, f.cy - b * M.atlas.s];
+
+function paintAtlas() {
+  const { ctx, cell, s } = M.atlas;
+  ctx.clearRect(0, 0, M.atlas.size, M.atlas.size);
+  for (const f of M.faces) {
+    ctx.fillStyle = f.fill;
+    ctx.fillRect(f.cx - cell / 2, f.cy - cell / 2, cell, cell);
+    if (ui.numbers) {
+      ctx.fillStyle = 'rgba(0,0,0,.28)';
+      ctx.font = `600 ${Math.max(8, f.inr * s * 0.7)}px -apple-system, sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(String(f.i), f.cx, f.cy);
+    }
+  }
+  for (const st of M.strokes) for (const run of strokeRuns(st.pts)) drawRunAtlas(st, run);
+  M.texDirty = true;
+}
+
+function strokeRuns(pts) {
+  const runs = [];
+  let cur = null;
+  for (const p of pts) {
+    if (!cur || cur.f !== p[0]) { cur = { f: p[0], pts: [] }; runs.push(cur); }
+    cur.pts.push(p);
+  }
+  return runs;
+}
+
+function drawRunAtlas(st, run) {
+  const { ctx, s } = M.atlas, f = M.faces[run.f];
+  ctx.save();
+  ctx.beginPath();
+  f.loc.forEach((p, k) => { const q = cellPx(f, p[0], p[1]); k ? ctx.lineTo(...q) : ctx.moveTo(...q); });
+  ctx.closePath();
+  ctx.clip();
+  const w = st.size * W3 * s;
+  ctx.strokeStyle = ctx.fillStyle = st.color;
+  if (run.pts.length === 1) {
+    ctx.beginPath(); ctx.arc(...cellPx(f, run.pts[0][1], run.pts[0][2]), w / 2, 0, 7); ctx.fill();
+  } else {
+    ctx.lineWidth = w; ctx.lineCap = ctx.lineJoin = 'round';
+    ctx.beginPath();
+    run.pts.forEach((p, k) => { const q = cellPx(f, p[1], p[2]); k ? ctx.lineTo(...q) : ctx.moveTo(...q); });
+    ctx.stroke();
+  }
+  ctx.restore();
+  M.texDirty = true;
+}
+
+// ---------- 3D view ----------
+const v3 = document.getElementById('v3');
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setClearColor(0xffffff);
+v3.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(35, 1, 0.05, 50);
+scene.add(camera);
+scene.add(new THREE.AmbientLight(0xffffff, 1.25));
+const sun = new THREE.DirectionalLight(0xffffff, 2.2);
+sun.position.set(1, 1.5, 2);
+camera.add(sun);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.enablePan = false;
+controls.minDistance = 1.6;
+controls.maxDistance = 12;
+function setControlButtons() {
+  const rot = ui.rotate || ui.space;
+  controls.mouseButtons = { LEFT: rot ? THREE.MOUSE.ROTATE : null, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
+  controls.touches = { ONE: rot ? THREE.TOUCH.ROTATE : null, TWO: THREE.TOUCH.DOLLY_ROTATE };
+}
+setControlButtons();
+
+const group = new THREE.Group();
+scene.add(group);
+const hoverMat = new THREE.MeshBasicMaterial({
+  color: 0xe8590c, transparent: true, opacity: 0.22, depthWrite: false,
+  polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+});
+const hoverMesh = new THREE.Mesh(new THREE.BufferGeometry(), hoverMat);
+hoverMesh.visible = false;
+scene.add(hoverMesh);
+
+function buildMesh() {
+  group.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material) { o.material.map?.dispose(); o.material.dispose(); } });
+  group.clear();
+  const pos = [], nor = [], uv = [], triFace = [], size = M.atlas.size;
+  for (const f of M.faces) {
+    const P = f.idx.map(k => M.V[k]);
+    const T = f.loc.map(p => { const q = cellPx(f, p[0], p[1]); return [q[0] / size, 1 - q[1] / size]; });
+    for (let k = 1; k < P.length - 1; k++) {
+      for (const j of [0, k, k + 1]) { pos.push(...P[j]); nor.push(...f.n); uv.push(...T[j]); }
+      triFace.push(f.i);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  const tex = new THREE.CanvasTexture(M.atlas.canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
+    map: tex, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
+  }));
+  const ep = [];
+  for (const key of M.edgeFaces.keys()) { const [a, b] = key.split(',').map(Number); ep.push(...M.V[a], ...M.V[b]); }
+  const eg = new THREE.BufferGeometry();
+  eg.setAttribute('position', new THREE.Float32BufferAttribute(ep, 3));
+  group.add(mesh, new THREE.LineSegments(eg, new THREE.LineBasicMaterial({ color: 0x2b2b28 })));
+  M.mesh = mesh; M.tex = tex; M.triFace = triFace;
+}
+
+function resetCamera() {
+  camera.position.set(1.6, 1.1, 3.4).setLength(4.3);
+  controls.target.set(0, 0, 0);
+  controls.update();
+}
+
+const raycaster = new THREE.Raycaster();
+function hit3D(ev) {
+  const r = renderer.domElement.getBoundingClientRect();
+  raycaster.setFromCamera(new THREE.Vector2(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1), camera);
+  const h = raycaster.intersectObject(M.mesh)[0];
+  if (!h) return null;
+  const f = M.triFace[h.faceIndex], [a, b] = toLocal(f, h.point.toArray());
+  return { f, a, b };
+}
+
+// Screen position (CSS px) of a stroke point in the 3D view, or null if its face points away.
+function screen3D(p) {
+  const w = toWorld(p[0], p[1], p[2]), cam = camera.position.toArray();
+  if (dot(M.faces[p[0]].n, sub(cam, w)) <= 0) return null;
+  const v = new THREE.Vector3(...w).project(camera), r = renderer.domElement.getBoundingClientRect();
+  return [(v.x + 1) / 2 * r.width, (1 - v.y) / 2 * r.height];
+}
+
+function setHoverMesh() {
+  if (hover < 0 || !M) { hoverMesh.visible = false; return; }
+  const f = M.faces[hover], P = f.idx.map(k => M.V[k]), pos = [];
+  for (let k = 1; k < P.length - 1; k++) pos.push(...P[0], ...P[k], ...P[k + 1]);
+  hoverMesh.geometry.dispose();
+  hoverMesh.geometry = new THREE.BufferGeometry();
+  hoverMesh.geometry.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  hoverMesh.visible = true;
+}
+
+// ---------- Schlegel projection ----------
+// Perspective projection from an eye point E just outside the outer face o, onto a plane
+// parallel to o. Each inner face maps to a convex polygon by a projective map (exactly
+// invertible). The outer face o is sent to the ring between its image B and 2B by reflecting
+// its (inside-B) image along rays from the centre: r -> 2R(θ) - r.
+function buildSchlegel() {
+  const o = M.faces[M.outer];
+  let lim = Infinity;
+  for (const f of M.faces) {
+    if (f === o) continue;
+    const den = dot(f.n, o.n);
+    if (den > 1e-9) lim = Math.min(lim, (f.d - dot(f.n, o.c)) / den);
+  }
+  if (!isFinite(lim)) lim = 1;
+  const t = lim * M.eye;
+  M.sch = { E: add(o.c, mul(o.n, t)), u: o.u, w: o.w, n: o.n, A: [1, 0, 0, 1], Ai: [1, 0, 0, 1] };
+  // Least-squares linear map taking the outer face's image onto a regular polygon, so the
+  // diagram isn't squashed (a linear map keeps lines straight and the mapping exact).
+  const Braw = o.idx.map(k => proj(M.V[k])), n = Braw.length;
+  const sgn = Math.sign(Braw.reduce((s, a, k) => s + cross2(a, Braw[(k + 1) % n]), 0)) || 1;
+  const th0 = Math.PI / 2 + (n % 2 ? 0 : Math.PI / n);
+  let g00 = 0, g01 = 0, g11 = 0, h00 = 0, h01 = 0, h10 = 0, h11 = 0;
+  Braw.forEach(([x, y], k) => {
+    const a = th0 + sgn * 2 * Math.PI * k / n, tx = Math.cos(a), ty = Math.sin(a);
+    g00 += x * x; g01 += x * y; g11 += y * y;
+    h00 += tx * x; h01 += tx * y; h10 += ty * x; h11 += ty * y;
+  });
+  const gd = g00 * g11 - g01 * g01, gi = [g11 / gd, -g01 / gd, -g01 / gd, g00 / gd];
+  const A = [h00 * gi[0] + h01 * gi[2], h00 * gi[1] + h01 * gi[3], h10 * gi[0] + h11 * gi[2], h10 * gi[1] + h11 * gi[3]];
+  const ad = A[0] * A[3] - A[1] * A[2];
+  if (isFinite(ad) && Math.abs(ad) > 1e-12) { M.sch.A = A; M.sch.Ai = [A[3] / ad, -A[1] / ad, -A[2] / ad, A[0] / ad]; }
+  M.sch.poly = M.faces.map(f => f.idx.map(k => proj(M.V[k])));
+  M.sch.orient = M.sch.poly.map(P => Math.sign(P.reduce((s, a, k) => s + cross2(a, P[(k + 1) % P.length]), 0)) || 1);
+  M.sch.B = M.sch.poly[M.outer];
+  M.sch.R = Math.max(...M.sch.B.map(p => Math.hypot(...p)));
+}
+
+function proj(p) {
+  const { E, u, w, n, A } = M.sch, r = sub(p, E), dep = -dot(r, n);
+  const x = dot(r, u) / dep, y = dot(r, w) / dep;
+  return [A[0] * x + A[1] * y, A[2] * x + A[3] * y];
+}
+function unproj(fi, q0) {
+  const { E, u, w, n, Ai } = M.sch, f = M.faces[fi];
+  const q = [Ai[0] * q0[0] + Ai[1] * q0[1], Ai[2] * q0[0] + Ai[3] * q0[1]];
+  const dir = sub(add(mul(u, q[0]), mul(w, q[1])), n);
+  return add(E, mul(dir, (f.d - dot(f.n, E)) / dot(f.n, dir)));
+}
+// Distance from the origin to the outer boundary B along unit direction d.
+function rayToB(d) {
+  const B = M.sch.B;
+  let best = M.sch.R;
+  for (let k = 0; k < B.length; k++) {
+    const A = B[k], e = [B[(k + 1) % B.length][0] - A[0], B[(k + 1) % B.length][1] - A[1]];
+    const den = cross2(d, e);
+    if (Math.abs(den) < 1e-12) continue;
+    const t = cross2(A, e) / den, s = cross2(A, d) / den;
+    if (t > 0 && s >= -1e-9 && s <= 1 + 1e-9) return t;
+  }
+  return best;
+}
+function outerFwd(q) {
+  const r = Math.hypot(...q);
+  if (r < 1e-9) return [0, 2 * rayToB([0, 1])];
+  const R = rayToB([q[0] / r, q[1] / r]);
+  return mul2(q, (2 * R - r) / r);
+}
+function outerInv(q) {
+  const r = Math.hypot(...q);
+  if (r < 1e-9) return null;
+  const R = rayToB([q[0] / r, q[1] / r]);
+  if (r < R - 1e-9 || r > 2 * R) return null;
+  return mul2(q, (2 * R - r) / r);
+}
+const mul2 = (q, s) => [q[0] * s, q[1] * s];
+
+function to2D(p) {
+  const q = proj(toWorld(p[0], p[1], p[2]));
+  return p[0] === M.outer ? outerFwd(q) : q;
+}
+
+// Signed margin of q inside convex polygon i (positive = inside).
+function margin(i, q) {
+  const P = M.sch.poly[i], o = M.sch.orient[i];
+  let m = Infinity;
+  for (let k = 0; k < P.length; k++) {
+    const A = P[k], B = P[(k + 1) % P.length], e = [B[0] - A[0], B[1] - A[1]];
+    m = Math.min(m, o * cross2(e, [q[0] - A[0], q[1] - A[1]]) / Math.hypot(...e));
+  }
+  return m;
+}
+
+function hit2DWorld(q) {
+  if (margin(M.outer, q) >= 0) {
+    let best = -1, bm = -Infinity;
+    for (let i = 0; i < M.faces.length; i++) {
+      if (i === M.outer) continue;
+      const m = margin(i, q);
+      if (m > bm) { bm = m; best = i; }
+    }
+    const [a, b] = toLocal(best, unproj(best, q));
+    return { f: best, a, b };
+  }
+  const qi = outerInv(q);
+  if (!qi) return null;
+  const [a, b] = toLocal(M.outer, unproj(M.outer, qi));
+  return { f: M.outer, a, b };
+}
+
+// ---------- 2D view ----------
+const c2 = document.getElementById('c2'), ctx2 = c2.getContext('2d');
+const view = { zoom: 1, px: 0, py: 0, w: 1, h: 1 };
+const w2s = q => [view.w / 2 + q[0] * view.zoom + view.px, view.h / 2 - q[1] * view.zoom + view.py];
+const s2w = s => [(s[0] - view.w / 2 - view.px) / view.zoom, -(s[1] - view.h / 2 - view.py) / view.zoom];
+
+function fit2D() {
+  view.zoom = Math.min(view.w, view.h) / 2 / (2 * M.sch.R * 1.04);
+  view.px = view.py = 0;
+}
+
+let need2D = false;
+const request2D = () => { need2D = true; };
+
+function polyPath(P, scale = 1) {
+  P.forEach((q, k) => { const s = w2s(mul2(q, scale)); k ? ctx2.lineTo(...s) : ctx2.moveTo(...s); });
+  ctx2.closePath();
+}
+
+function draw2D() {
+  const dpr = window.devicePixelRatio || 1;
+  ctx2.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx2.fillStyle = '#ffffff';
+  ctx2.fillRect(0, 0, view.w, view.h);
+  if (!M) return;
+  const { poly, B } = M.sch;
+  // outer face = ring between B and 2B
+  ctx2.beginPath(); polyPath(B, 2); polyPath(B);
+  ctx2.fillStyle = M.faces[M.outer].fill; ctx2.fill('evenodd');
+  if (hover === M.outer) { ctx2.fillStyle = 'rgba(232,89,12,.2)'; ctx2.fill('evenodd'); }
+  for (let i = 0; i < poly.length; i++) {
+    if (i === M.outer) continue;
+    ctx2.beginPath(); polyPath(poly[i]);
+    ctx2.fillStyle = M.faces[i].fill; ctx2.fill();
+    if (hover === i) { ctx2.fillStyle = 'rgba(232,89,12,.2)'; ctx2.fill(); }
+  }
+  if (ui.numbers) {
+    ctx2.fillStyle = 'rgba(0,0,0,.35)';
+    ctx2.textAlign = 'center'; ctx2.textBaseline = 'middle';
+    for (let i = 0; i < poly.length; i++) {
+      let q;
+      if (i === M.outer) q = [0, 1.5 * rayToB([0, 1])];
+      else q = proj(M.faces[i].c);
+      const P = poly[i === M.outer ? i : i];
+      let inr = Infinity;
+      if (i !== M.outer) for (let k = 0; k < P.length; k++) inr = Math.min(inr, margin(i, q));
+      else inr = 0.35 * rayToB([0, 1]);
+      const px = Math.min(15, Math.max(0, inr * view.zoom * 0.9));
+      if (px < 6) continue;
+      ctx2.font = `600 ${px}px -apple-system, sans-serif`;
+      ctx2.fillText(String(i), ...w2s(q));
+    }
+  }
+  // edges
+  ctx2.strokeStyle = '#2b2b28'; ctx2.lineWidth = 1.1; ctx2.lineJoin = 'round';
+  ctx2.beginPath();
+  for (let i = 0; i < poly.length; i++) if (i !== M.outer) polyPath(poly[i]);
+  ctx2.stroke();
+  ctx2.lineWidth = 1.6; ctx2.beginPath(); polyPath(B); ctx2.stroke();
+  ctx2.setLineDash([4, 4]); ctx2.strokeStyle = '#a9a69d'; ctx2.lineWidth = 1;
+  ctx2.beginPath(); polyPath(B, 2); ctx2.stroke(); ctx2.setLineDash([]);
+  // strokes
+  for (const st of M.strokes) for (const run of strokeRuns(st.pts)) drawRun2D(st, run);
+}
+
+function drawRun2D(st, run) {
+  const outer = run.f === M.outer;
+  ctx2.save();
+  ctx2.beginPath();
+  if (outer) { polyPath(M.sch.B, 2); polyPath(M.sch.B); ctx2.clip('evenodd'); }
+  else { polyPath(M.sch.poly[run.f]); ctx2.clip(); }
+  const w = st.size * W2;
+  ctx2.strokeStyle = ctx2.fillStyle = st.color;
+  if (run.pts.length === 1) {
+    ctx2.beginPath(); ctx2.arc(...w2s(to2D(run.pts[0])), w / 2, 0, 7); ctx2.fill();
+  } else {
+    ctx2.lineWidth = w; ctx2.lineCap = ctx2.lineJoin = 'round';
+    ctx2.beginPath();
+    ctx2.moveTo(...w2s(to2D(run.pts[0])));
+    for (let k = 1; k < run.pts.length; k++) {
+      const p = run.pts[k], prev = run.pts[k - 1];
+      // the outer face's reflection bends straight lines, so subdivide there
+      const steps = outer ? 6 : 1;
+      for (let j = 1; j <= steps; j++) {
+        const t = j / steps;
+        ctx2.lineTo(...w2s(to2D([p[0], prev[1] + (p[1] - prev[1]) * t, prev[2] + (p[2] - prev[2]) * t])));
+      }
+    }
+    ctx2.stroke();
+  }
+  ctx2.restore();
+}
+
+// ---------- drawing / erasing ----------
+let active = null;   // { view: '3d'|'2d', st, last: [x,y], erased: [] }
+
+function newStroke() {
+  const st = { color: ui.color, size: ui.size, pts: [] };
+  M.strokes.push(st);
+  return st;
+}
+
+function addHit(st, h) {
+  const pts = st.pts, last = pts[pts.length - 1], start = pts.length;
+  if (last && last[0] === h.f && Math.hypot(last[1] - h.a, last[2] - h.b) < 1e-4) return;
+  if (last && last[0] !== h.f) {
+    const e = sharedEdge(last[0], h.f);
+    if (e) {
+      const X = edgeCrossing(e[0], e[1], toWorld(...last), toWorld(h.f, h.a, h.b));
+      pts.push([last[0], ...toLocal(last[0], X)], [h.f, ...toLocal(h.f, X)]);
+    }
+  }
+  pts.push([h.f, h.a, h.b]);
+  for (const run of strokeRuns(pts.slice(Math.max(0, start - 1)))) drawRunAtlas(st, run);
+  request2D();
+}
+
+function eraseAt(which, s) {
+  const r = 6 + ui.size * 2;
+  const before = M.strokes.length;
+  M.strokes = M.strokes.filter(st => {
+    const hitIt = st.pts.some(p => {
+      const q = which === '3d' ? screen3D(p) : w2s(to2D(p));
+      return q && Math.hypot(q[0] - s[0], q[1] - s[1]) <= r;
+    });
+    if (hitIt) active.erased.push(st);
+    return !hitIt;
+  });
+  if (M.strokes.length !== before) { paintAtlas(); request2D(); }
+}
+
+function localXY(ev, el) { const r = el.getBoundingClientRect(); return [ev.clientX - r.left, ev.clientY - r.top]; }
+
+function hitAt(which, ev) {
+  return which === '3d' ? hit3D(ev) : hit2DWorld(s2w(localXY(ev, c2)));
+}
+
+function startAction(which, ev) {
+  const h = hitAt(which, ev);
+  if (ui.picking) {
+    if (h) setOuter(h.f);
+    ui.picking = false; syncButtons();
+    return;
+  }
+  active = { view: which, last: localXY(ev, which === '3d' ? renderer.domElement : c2), erased: [], strokes: [] };
+  if (ui.tool === 'eraser') { eraseAt(which, active.last); return; }
+  if (h) { active.st = newStroke(); active.strokes.push(active.st); addHit(active.st, h); }
+}
+
+function moveAction(ev) {
+  const which = active.view, el = which === '3d' ? renderer.domElement : c2;
+  const cur = localXY(ev, el), [x0, y0] = active.last;
+  const n = Math.max(1, Math.ceil(Math.hypot(cur[0] - x0, cur[1] - y0) / 3));
+  const r = el.getBoundingClientRect();
+  for (let k = 1; k <= n; k++) {
+    const sx = x0 + (cur[0] - x0) * k / n, sy = y0 + (cur[1] - y0) * k / n;
+    if (ui.tool === 'eraser') { eraseAt(which, [sx, sy]); continue; }
+    const h = hitAt(which, { clientX: r.left + sx, clientY: r.top + sy });
+    if (!h) { active.st = null; continue; }           // left the model: lift the pen
+    if (!active.st) { active.st = newStroke(); active.strokes.push(active.st); }
+    addHit(active.st, h);
+  }
+  active.last = cur;
+}
+
+function endAction() {
+  if (!active) return;
+  if (active.erased.length) pushHistory({ type: 'remove', strokes: active.erased });
+  const added = active.strokes.filter(s => s.pts.length);
+  if (added.length) pushHistory({ type: 'add', strokes: added });
+  active = null;
+  saveStore();
+}
+
+function pushHistory(a) { M.undo.push(a); M.redo = []; }
+function applyHistory(a, forward) {
+  const adding = (a.type === 'add') === forward;
+  if (adding) M.strokes.push(...a.strokes);
+  else M.strokes = M.strokes.filter(s => !a.strokes.includes(s));
+  paintAtlas(); request2D(); saveStore();
+}
+function undo() { const a = M.undo.pop(); if (a) { applyHistory(a, false); M.redo.push(a); } }
+function redo() { const a = M.redo.pop(); if (a) { applyHistory(a, true); M.undo.push(a); } }
+
+// ---------- pointer wiring ----------
+const cv3 = renderer.domElement;
+cv3.addEventListener('pointerdown', ev => {
+  if (ev.button !== 0 || ui.rotate || ui.space || active) return;
+  cv3.setPointerCapture(ev.pointerId);
+  startAction('3d', ev);
+});
+cv3.addEventListener('pointermove', ev => {
+  if (active?.view === '3d') moveAction(ev);
+  else if (!ev.buttons && M) { const h = hit3D(ev); setHover(h ? h.f : -1); }
+});
+cv3.addEventListener('pointerleave', () => { if (!active) setHover(-1); });
+
+let pan = null;
+c2.addEventListener('pointerdown', ev => {
+  if (active || pan) return;
+  c2.setPointerCapture(ev.pointerId);
+  if (ev.button === 2 || ev.button === 1 || ui.rotate || ui.space) { pan = { x: ev.clientX, y: ev.clientY }; return; }
+  if (ev.button === 0) startAction('2d', ev);
+});
+c2.addEventListener('pointermove', ev => {
+  if (pan) {
+    view.px += ev.clientX - pan.x; view.py += ev.clientY - pan.y;
+    pan = { x: ev.clientX, y: ev.clientY }; request2D();
+  } else if (active?.view === '2d') moveAction(ev);
+  else if (!ev.buttons && M) { const h = hit2DWorld(s2w(localXY(ev, c2))); setHover(h ? h.f : -1); }
+});
+c2.addEventListener('pointerleave', () => { if (!active) setHover(-1); });
+c2.addEventListener('wheel', ev => {
+  ev.preventDefault();
+  const s = localXY(ev, c2), before = s2w(s);
+  view.zoom *= Math.exp(-ev.deltaY * 0.0015);
+  const after = w2s(before);
+  view.px += s[0] - after[0]; view.py += s[1] - after[1];
+  request2D();
+}, { passive: false });
+window.addEventListener('pointerup', () => { endAction(); pan = null; });
+window.addEventListener('pointercancel', () => { endAction(); pan = null; });
+for (const el of [cv3, c2]) el.addEventListener('contextmenu', ev => ev.preventDefault());
+
+function setHover(f) {
+  if (f === hover) return;
+  hover = f; setHoverMesh(); request2D(); updateStatus();
+}
+
+// ---------- model loading ----------
+function defaultOuter(m) {
+  let best = 0;
+  m.faces.forEach(f => { if (f.idx.length > m.faces[best].idx.length) best = f.i; });
+  return best;
+}
+
+function loadModel(id) {
+  const def = MODELS.find(m => m.id === id) || MODELS[0];
+  M = buildModel(def);
+  const saved = store[def.id] || {};
+  M.outer = saved.outer < M.faces.length ? saved.outer : defaultOuter(M);
+  M.eye = saved.eye || 0.8;
+  M.strokes = (saved.strokes || []).map(s => ({ color: s.c, size: s.s, pts: s.p }))
+    .filter(s => s.pts.every(p => p[0] < M.faces.length));
+  M.undo = []; M.redo = [];
+  hover = -1; setHoverMesh();
+  document.getElementById('eye').value = Math.round(M.eye * 100);
+  buildAtlas(); buildMesh(); paintAtlas();
+  buildSchlegel(); fit2D(); request2D();
+  resetCamera(); updateStatus();
+}
+
+function setOuter(f) {
+  M.outer = f; buildSchlegel(); fit2D(); request2D(); saveStore(); updateStatus();
+}
+
+function updateStatus() {
+  if (!M) return;
+  const F = M.faces.length, E = M.edgeFaces.size, V = M.V.length;
+  let s = `${M.def.name} — V ${V} · E ${E} · F ${F} · outer face #${M.outer}`;
+  if (hover >= 0) s += ` · hovering face #${hover} (${POLY_NAME[M.faces[hover].idx.length] || M.faces[hover].idx.length + '-gon'})`;
+  if (ui.picking) s = 'Click a face in either view to make it the outer face';
+  document.getElementById('status').textContent = s;
+}
+
+// ---------- toolbar ----------
+const sel = document.getElementById('model');
+for (const [label, test] of [['Platonic', id => PLATONIC.includes(id)], ['Archimedean', id => ARCHIMEDEAN.includes(id)],
+  ['Catalan', id => !PLATONIC.includes(id) && !ARCHIMEDEAN.includes(id)]]) {
+  const og = document.createElement('optgroup');
+  og.label = label;
+  for (const m of MODELS.filter(m => test(m.id))) {
+    const o = document.createElement('option');
+    o.value = m.id; o.textContent = `${m.name}  (${m.id})`;
+    og.append(o);
+  }
+  sel.append(og);
+}
+sel.addEventListener('change', () => { saveStore(); loadModel(sel.value); try { localStorage.setItem(STORE_KEY + '-last', sel.value); } catch {} });
+
+const sw = document.getElementById('swatches');
+const swatchEls = COLORS.map((c, k) => {
+  const b = document.createElement('button');
+  b.className = 'sw'; b.style.background = c; b.title = `Colour ${k + 1}`;
+  b.addEventListener('click', () => setColor(c));
+  sw.append(b);
+  return b;
+});
+const custom = document.createElement('input');
+custom.type = 'color'; custom.title = 'Custom colour'; custom.value = '#00a3a3';
+custom.addEventListener('input', () => setColor(custom.value));
+sw.append(custom);
+function setColor(c) { ui.color = c; ui.tool = 'pen'; syncButtons(); }
+
+document.getElementById('size').addEventListener('input', e => { ui.size = +e.target.value; });
+document.getElementById('pen').onclick = () => { ui.tool = 'pen'; syncButtons(); };
+document.getElementById('eraser').onclick = () => { ui.tool = 'eraser'; syncButtons(); };
+document.getElementById('rotate').onclick = () => { ui.rotate = !ui.rotate; setControlButtons(); syncButtons(); };
+document.getElementById('undo').onclick = undo;
+document.getElementById('redo').onclick = redo;
+document.getElementById('clear').onclick = () => {
+  if (!M.strokes.length) return;
+  pushHistory({ type: 'remove', strokes: M.strokes.slice() });
+  M.strokes = []; paintAtlas(); request2D(); saveStore();
+};
+document.getElementById('pick').onclick = () => { ui.picking = !ui.picking; syncButtons(); updateStatus(); };
+document.getElementById('eye').addEventListener('input', e => {
+  M.eye = e.target.value / 100; buildSchlegel(); fit2D(); request2D();
+});
+document.getElementById('eye').addEventListener('change', saveStore);
+document.getElementById('numbers').onclick = () => { ui.numbers = !ui.numbers; paintAtlas(); request2D(); syncButtons(); };
+document.getElementById('reset').onclick = () => { resetCamera(); fit2D(); request2D(); };
+
+function download(name, href) { const a = document.createElement('a'); a.href = href; a.download = name; a.click(); }
+document.getElementById('export').onclick = () => {
+  saveStore();
+  const url = URL.createObjectURL(new Blob([JSON.stringify(store, null, 1)], { type: 'application/json' }));
+  download('polyhedron-drawings.json', url);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+document.getElementById('import').onclick = () => document.getElementById('file').click();
+document.getElementById('file').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  try {
+    Object.assign(store, JSON.parse(await file.text()));
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(store)); } catch {}
+    loadModel(M.def.id);
+  } catch (err) { alert('Could not read that file: ' + err.message); }
+  e.target.value = '';
+});
+document.getElementById('png').onclick = () => {
+  renderer.render(scene, camera);
+  download(`${M.def.id}-3d.png`, renderer.domElement.toDataURL('image/png'));
+  draw2D();
+  setTimeout(() => download(`${M.def.id}-schlegel.png`, c2.toDataURL('image/png')), 300);
+};
+
+function syncButtons() {
+  document.getElementById('pen').classList.toggle('on', ui.tool === 'pen');
+  document.getElementById('eraser').classList.toggle('on', ui.tool === 'eraser');
+  document.getElementById('rotate').classList.toggle('on', ui.rotate);
+  document.getElementById('numbers').classList.toggle('on', ui.numbers);
+  document.getElementById('pick').classList.toggle('arm', ui.picking);
+  swatchEls.forEach((b, k) => b.classList.toggle('on', ui.tool === 'pen' && COLORS[k] === ui.color));
+  custom.style.outline = ui.tool === 'pen' && !COLORS.includes(ui.color) ? '2px solid var(--ink)' : 'none';
+}
+
+window.addEventListener('keydown', e => {
+  if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
+  if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); return; }
+  if (mod) return;
+  if (e.code === 'Space') { e.preventDefault(); if (!ui.space) { ui.space = true; setControlButtons(); } return; }
+  const k = e.key.toLowerCase();
+  if (k >= '1' && k <= '6') setColor(COLORS[+k - 1]);
+  else if (k === 'p') { ui.tool = 'pen'; syncButtons(); }
+  else if (k === 'e') { ui.tool = 'eraser'; syncButtons(); }
+  else if (k === 'r') { ui.rotate = !ui.rotate; setControlButtons(); syncButtons(); }
+  else if (k === 'escape') { ui.picking = false; syncButtons(); updateStatus(); }
+});
+window.addEventListener('keyup', e => { if (e.code === 'Space') { ui.space = false; setControlButtons(); } });
+
+// ---------- layout + loop ----------
+function resize() {
+  const r3 = v3.getBoundingClientRect();
+  renderer.setSize(r3.width, r3.height, false);
+  camera.aspect = r3.width / Math.max(1, r3.height); camera.updateProjectionMatrix();
+  const r2 = c2.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  view.w = r2.width; view.h = r2.height;
+  c2.width = Math.round(r2.width * dpr); c2.height = Math.round(r2.height * dpr);
+  if (M) fit2D();
+  request2D();
+}
+new ResizeObserver(resize).observe(document.querySelector('main'));
+
+function loop() {
+  controls.update();
+  if (M?.texDirty) { M.tex.needsUpdate = true; M.texDirty = false; }
+  renderer.render(scene, camera);
+  if (need2D) { need2D = false; draw2D(); }
+  requestAnimationFrame(loop);
+}
+
+let startId = MODELS[0].id;
+try { startId = localStorage.getItem(STORE_KEY + '-last') || startId; } catch {}
+sel.value = MODELS.some(m => m.id === startId) ? startId : MODELS[0].id;
+resize();
+loadModel(sel.value);
+fit2D();
+syncButtons();
+loop();
+</script>
+</body>
+</html>
