@@ -14,13 +14,14 @@ Draw on the faces of a convex polyhedron and see the drawing on its
 | Action | How |
 | --- | --- |
 | Draw | Left-drag in either view |
+| Turn a face to the front (3D) | Click it in either view |
 | Rotate 3D / pan 2D | Right-drag, hold Space, or toggle **Rotate/Pan** |
 | Zoom | Mouse wheel |
 | Colours | Swatches or keys 1–6, plus a custom colour picker |
 | Erase a stroke | **Eraser** (E) |
 | Undo / redo | ⌘Z / ⇧⌘Z |
 | Change the diagram's outer face | **Set outer face…**, then click a face |
-| Spread the diagram | **Eye** slider |
+| Enlarge the inner faces | **Spread** slider (far right = straight edges), **Eye** slider |
 | Save work | **Export JSON** / **Import JSON**, **Save PNGs** |
 
 The outer face of the Schlegel diagram is everything outside its boundary, so its drawings

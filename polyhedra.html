@@ -87,7 +87,8 @@
   </div>
   <div class="grp">
     <button id="pick" title="Click a face in either view to make it the outer face of the Schlegel diagram">Set outer face…</button>
-    <span class="lbl">Eye</span><input id="eye" type="range" min="10" max="97" value="80" title="Distance of the projection point from the outer face">
+    <span class="lbl">Eye</span><input id="eye" type="range" min="10" max="97" value="45" title="Distance of the projection point from the outer face">
+    <span class="lbl">Spread</span><input id="spread" type="range" min="20" max="100" value="60" title="Enlarge the inner faces of the Schlegel diagram (right end = straight edges)">
     <button id="numbers" class="on">Face numbers</button>
     <button id="reset">Reset views</button>
   </div>
@@ -104,7 +105,7 @@
 </main>
 <footer>
   <span id="status"></span>
-  <span>Left-drag: draw · Right-drag: rotate (3D) / pan (2D) · Wheel: zoom · Space: hold to rotate/pan · 1–6: colours · ⌘Z: undo</span>
+  <span>Left-drag: draw · Click a face: turn it to the front · Right-drag: rotate (3D) / pan (2D) · Wheel: zoom · Space: hold to rotate/pan · 1–6: colours · ⌘Z: undo</span>
 </footer>
 
 <script type="module">
@@ -119,7 +120,8 @@ const COLORS = ['#111111', '#e03131', '#1c7ed6', '#2f9e44', '#f08c00', '#9c36b5'
 const FACE_FILL = { 3: '#fbe3b8', 4: '#cfe6f5', 5: '#d4eecb', 6: '#f6d0d0', 8: '#e2d9f5', 10: '#f2e9bf' };
 const POLY_NAME = { 3: 'triangle', 4: 'quadrilateral', 5: 'pentagon', 6: 'hexagon', 8: 'octagon', 10: 'decagon' };
 const W3 = 0.006;    // 3D stroke width per size step, in model units (circumradius = 1)
-const W2 = 1.3;      // 2D stroke width per size step, in CSS px
+const W2 = 1.3;      // max 2D stroke width per size step, in CSS px
+const RING = 0.35;   // width of the outer-face ring in the Schlegel view, relative to the boundary
 const STORE_KEY = 'polyhedron-sketchpad-v1';
 
 // ---------- small vector helpers (arrays) ----------
@@ -143,7 +145,7 @@ function loadStore() {
 function saveStore() {
   if (!M) return;
   store[M.def.id] = {
-    outer: M.outer, eye: M.eye,
+    outer: M.outer, eye: M.eye, spread: M.spread,
     strokes: M.strokes.map(s => ({ c: s.color, s: s.size, p: s.pts.map(p => [p[0], +p[1].toFixed(5), +p[2].toFixed(5)]) })),
   };
   try { localStorage.setItem(STORE_KEY, JSON.stringify(store)); } catch { /* storage unavailable */ }
@@ -365,15 +367,20 @@ function setHoverMesh() {
 // its (inside-B) image along rays from the centre: r -> 2R(θ) - r.
 function buildSchlegel() {
   const o = M.faces[M.outer];
+  // Put the eye above the point where the face is closest to the centre (the insphere contact
+  // point for Catalan solids, the face centre otherwise): the far side then lands mid-diagram.
+  let base = mul(o.n, o.d);
+  const bl = toLocal(o.i, base);
+  if (o.loc.some((a, k) => cross2(sub2(o.loc[(k + 1) % o.loc.length], a), sub2(bl, a)) <= 0)) base = o.c;
   let lim = Infinity;
   for (const f of M.faces) {
     if (f === o) continue;
     const den = dot(f.n, o.n);
-    if (den > 1e-9) lim = Math.min(lim, (f.d - dot(f.n, o.c)) / den);
+    if (den > 1e-9) lim = Math.min(lim, (f.d - dot(f.n, base)) / den);
   }
   if (!isFinite(lim)) lim = 1;
   const t = lim * M.eye;
-  M.sch = { E: add(o.c, mul(o.n, t)), u: o.u, w: o.w, n: o.n, A: [1, 0, 0, 1], Ai: [1, 0, 0, 1] };
+  M.sch = { E: add(base, mul(o.n, t)), u: o.u, w: o.w, n: o.n, A: [1, 0, 0, 1], Ai: [1, 0, 0, 1] };
   // Least-squares linear map taking the outer face's image onto a regular polygon, so the
   // diagram isn't squashed (a linear map keeps lines straight and the mapping exact).
   const Braw = o.idx.map(k => proj(M.V[k])), n = Braw.length;
@@ -393,6 +400,7 @@ function buildSchlegel() {
   M.sch.orient = M.sch.poly.map(P => Math.sign(P.reduce((s, a, k) => s + cross2(a, P[(k + 1) % P.length]), 0)) || 1);
   M.sch.B = M.sch.poly[M.outer];
   M.sch.R = Math.max(...M.sch.B.map(p => Math.hypot(...p)));
+  build2DShapes();
 }
 
 function proj(p) {
@@ -409,7 +417,6 @@ function unproj(fi, q0) {
 // Distance from the origin to the outer boundary B along unit direction d.
 function rayToB(d) {
   const B = M.sch.B;
-  let best = M.sch.R;
   for (let k = 0; k < B.length; k++) {
     const A = B[k], e = [B[(k + 1) % B.length][0] - A[0], B[(k + 1) % B.length][1] - A[1]];
     const den = cross2(d, e);
@@ -417,29 +424,45 @@ function rayToB(d) {
     const t = cross2(A, e) / den, s = cross2(A, d) / den;
     if (t > 0 && s >= -1e-9 && s <= 1 + 1e-9) return t;
   }
-  return best;
+  return M.sch.R;
 }
+const mul2 = (q, s) => [q[0] * s, q[1] * s];
+const lerp2 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+
+// The outer face is shown as the ring between B and (1 + RING)·B: its image inside B is
+// reflected along rays from the centre, r -> R + RING·(R - r).
 function outerFwd(q) {
   const r = Math.hypot(...q);
-  if (r < 1e-9) return [0, 2 * rayToB([0, 1])];
+  if (r < 1e-9) return [0, (1 + RING) * rayToB([0, 1])];
   const R = rayToB([q[0] / r, q[1] / r]);
-  return mul2(q, (2 * R - r) / r);
+  return mul2(q, (R + RING * (R - r)) / r);
 }
 function outerInv(q) {
   const r = Math.hypot(...q);
   if (r < 1e-9) return null;
   const R = rayToB([q[0] / r, q[1] / r]);
-  if (r < R - 1e-9 || r > 2 * R) return null;
-  return mul2(q, (2 * R - r) / r);
+  if (r < R - 1e-9 || r > (1 + RING) * R) return null;
+  return mul2(q, (R - (r - R) / RING) / r);
 }
-const mul2 = (q, s) => [q[0] * s, q[1] * s];
+
+// Radial "spread" inside B: rho -> rho^spread (rho = r / R(θ)) enlarges the crowded inner faces
+// while keeping B fixed. spread = 1 is the plain straight-edged Schlegel diagram.
+function radial(q, g) {
+  if (g === 1) return q;
+  const r = Math.hypot(...q);
+  if (r < 1e-12) return q;
+  const R = rayToB([q[0] / r, q[1] / r]);
+  return mul2(q, R * Math.pow(Math.min(1, r / R), g) / r);
+}
+const warp = q => radial(q, M.spread);
+const unwarp = q => radial(q, 1 / M.spread);
 
 function to2D(p) {
   const q = proj(toWorld(p[0], p[1], p[2]));
-  return p[0] === M.outer ? outerFwd(q) : q;
+  return p[0] === M.outer ? outerFwd(q) : warp(q);
 }
 
-// Signed margin of q inside convex polygon i (positive = inside).
+// Signed margin of q inside convex polygon i (positive = inside), in unwarped coordinates.
 function margin(i, q) {
   const P = M.sch.poly[i], o = M.sch.orient[i];
   let m = Infinity;
@@ -450,8 +473,9 @@ function margin(i, q) {
   return m;
 }
 
-function hit2DWorld(q) {
-  if (margin(M.outer, q) >= 0) {
+function hit2DWorld(d) {
+  if (margin(M.outer, d) >= 0) {   // B is unchanged by the warp
+    const q = unwarp(d);
     let best = -1, bm = -Infinity;
     for (let i = 0; i < M.faces.length; i++) {
       if (i === M.outer) continue;
@@ -461,10 +485,28 @@ function hit2DWorld(q) {
     const [a, b] = toLocal(best, unproj(best, q));
     return { f: best, a, b };
   }
-  const qi = outerInv(q);
+  const qi = outerInv(d);
   if (!qi) return null;
   const [a, b] = toLocal(M.outer, unproj(M.outer, qi));
   return { f: M.outer, a, b };
+}
+
+// Displayed outline of inner face i (edges bend when spread < 1).
+function faceOutline(i) {
+  const P = M.sch.poly[i], n = M.spread === 1 ? 1 : 10, out = [];
+  P.forEach((a, k) => { const b = P[(k + 1) % P.length]; for (let j = 0; j < n; j++) out.push(warp(lerp2(a, b, j / n))); });
+  return out;
+}
+const polyArea = P => Math.abs(P.reduce((s, a, k) => s + cross2(a, P[(k + 1) % P.length]), 0)) / 2;
+
+// Cache the displayed outlines and, per face, the 2D length per unit of 3D length.
+function build2DShapes() {
+  const sch = M.sch;
+  sch.outline = M.faces.map(f => f.i === M.outer ? null : faceOutline(f.i));
+  sch.lenScale = M.faces.map(f => {
+    const a2 = f.i === M.outer ? ((1 + RING) ** 2 - 1) * polyArea(sch.B) : polyArea(sch.outline[f.i]);
+    return Math.sqrt(a2 / polyArea(f.loc));
+  });
 }
 
 // ---------- 2D view ----------
@@ -474,7 +516,7 @@ const w2s = q => [view.w / 2 + q[0] * view.zoom + view.px, view.h / 2 - q[1] * v
 const s2w = s => [(s[0] - view.w / 2 - view.px) / view.zoom, -(s[1] - view.h / 2 - view.py) / view.zoom];
 
 function fit2D() {
-  view.zoom = Math.min(view.w, view.h) / 2 / (2 * M.sch.R * 1.04);
+  view.zoom = Math.min(view.w, view.h) / 2 / ((1 + RING) * M.sch.R * 1.03);
   view.px = view.py = 0;
 }
 
@@ -492,29 +534,30 @@ function draw2D() {
   ctx2.fillStyle = '#ffffff';
   ctx2.fillRect(0, 0, view.w, view.h);
   if (!M) return;
-  const { poly, B } = M.sch;
-  // outer face = ring between B and 2B
-  ctx2.beginPath(); polyPath(B, 2); polyPath(B);
+  const { outline, B } = M.sch;
+  // outer face = ring between B and (1 + RING)·B
+  ctx2.beginPath(); polyPath(B, 1 + RING); polyPath(B);
   ctx2.fillStyle = M.faces[M.outer].fill; ctx2.fill('evenodd');
   if (hover === M.outer) { ctx2.fillStyle = 'rgba(232,89,12,.2)'; ctx2.fill('evenodd'); }
-  for (let i = 0; i < poly.length; i++) {
+  for (let i = 0; i < outline.length; i++) {
     if (i === M.outer) continue;
-    ctx2.beginPath(); polyPath(poly[i]);
+    ctx2.beginPath(); polyPath(outline[i]);
     ctx2.fillStyle = M.faces[i].fill; ctx2.fill();
     if (hover === i) { ctx2.fillStyle = 'rgba(232,89,12,.2)'; ctx2.fill(); }
   }
   if (ui.numbers) {
     ctx2.fillStyle = 'rgba(0,0,0,.35)';
     ctx2.textAlign = 'center'; ctx2.textBaseline = 'middle';
-    for (let i = 0; i < poly.length; i++) {
-      let q;
-      if (i === M.outer) q = [0, 1.5 * rayToB([0, 1])];
-      else q = proj(M.faces[i].c);
-      const P = poly[i === M.outer ? i : i];
-      let inr = Infinity;
-      if (i !== M.outer) for (let k = 0; k < P.length; k++) inr = Math.min(inr, margin(i, q));
-      else inr = 0.35 * rayToB([0, 1]);
-      const px = Math.min(15, Math.max(0, inr * view.zoom * 0.9));
+    for (let i = 0; i < outline.length; i++) {
+      let q, size;
+      if (i === M.outer) {
+        const R = rayToB([0, 1]);
+        q = [0, (1 + RING / 2) * R]; size = RING * R * 0.6;
+      } else {
+        const c = proj(M.faces[i].c), m = margin(i, c);
+        q = warp(c); size = Math.hypot(...sub2(warp([c[0] + m, c[1]]), q)) * 0.9;
+      }
+      const px = Math.min(15, size * view.zoom);
       if (px < 6) continue;
       ctx2.font = `600 ${px}px -apple-system, sans-serif`;
       ctx2.fillText(String(i), ...w2s(q));
@@ -523,22 +566,24 @@ function draw2D() {
   // edges
   ctx2.strokeStyle = '#2b2b28'; ctx2.lineWidth = 1.1; ctx2.lineJoin = 'round';
   ctx2.beginPath();
-  for (let i = 0; i < poly.length; i++) if (i !== M.outer) polyPath(poly[i]);
+  for (let i = 0; i < outline.length; i++) if (i !== M.outer) polyPath(outline[i]);
   ctx2.stroke();
   ctx2.lineWidth = 1.6; ctx2.beginPath(); polyPath(B); ctx2.stroke();
   ctx2.setLineDash([4, 4]); ctx2.strokeStyle = '#a9a69d'; ctx2.lineWidth = 1;
-  ctx2.beginPath(); polyPath(B, 2); ctx2.stroke(); ctx2.setLineDash([]);
+  ctx2.beginPath(); polyPath(B, 1 + RING); ctx2.stroke(); ctx2.setLineDash([]);
   // strokes
   for (const st of M.strokes) for (const run of strokeRuns(st.pts)) drawRun2D(st, run);
 }
+const sub2 = (a, b) => [a[0] - b[0], a[1] - b[1]];
 
 function drawRun2D(st, run) {
   const outer = run.f === M.outer;
   ctx2.save();
   ctx2.beginPath();
-  if (outer) { polyPath(M.sch.B, 2); polyPath(M.sch.B); ctx2.clip('evenodd'); }
-  else { polyPath(M.sch.poly[run.f]); ctx2.clip(); }
-  const w = st.size * W2;
+  if (outer) { polyPath(M.sch.B, 1 + RING); polyPath(M.sch.B); ctx2.clip('evenodd'); }
+  else { polyPath(M.sch.outline[run.f]); ctx2.clip(); }
+  // same thickness relative to the face as on the 3D model
+  const w = Math.min(st.size * W2, Math.max(0.6, st.size * W3 * M.sch.lenScale[run.f] * view.zoom));
   ctx2.strokeStyle = ctx2.fillStyle = st.color;
   if (run.pts.length === 1) {
     ctx2.beginPath(); ctx2.arc(...w2s(to2D(run.pts[0])), w / 2, 0, 7); ctx2.fill();
@@ -546,10 +591,10 @@ function drawRun2D(st, run) {
     ctx2.lineWidth = w; ctx2.lineCap = ctx2.lineJoin = 'round';
     ctx2.beginPath();
     ctx2.moveTo(...w2s(to2D(run.pts[0])));
+    // the outer ring and the spread warp bend straight lines, so subdivide
+    const steps = outer ? 6 : M.spread === 1 ? 1 : 3;
     for (let k = 1; k < run.pts.length; k++) {
       const p = run.pts[k], prev = run.pts[k - 1];
-      // the outer face's reflection bends straight lines, so subdivide there
-      const steps = outer ? 6 : 1;
       for (let j = 1; j <= steps; j++) {
         const t = j / steps;
         ctx2.lineTo(...w2s(to2D([p[0], prev[1] + (p[1] - prev[1]) * t, prev[2] + (p[2] - prev[2]) * t])));
@@ -611,14 +656,23 @@ function startAction(which, ev) {
     ui.picking = false; syncButtons();
     return;
   }
-  active = { view: which, last: localXY(ev, which === '3d' ? renderer.domElement : c2), erased: [], strokes: [] };
-  if (ui.tool === 'eraser') { eraseAt(which, active.last); return; }
-  if (h) { active.st = newStroke(); active.strokes.push(active.st); addHit(active.st, h); }
+  const at = localXY(ev, which === '3d' ? renderer.domElement : c2);
+  active = { view: which, last: at, down: at, moved: false, pending: h, erased: [], strokes: [] };
+  if (ui.tool === 'eraser') eraseAt(which, at);
+  // with the pen, the stroke only starts once the pointer moves: a plain click focuses the face
 }
 
 function moveAction(ev) {
   const which = active.view, el = which === '3d' ? renderer.domElement : c2;
-  const cur = localXY(ev, el), [x0, y0] = active.last;
+  const cur = localXY(ev, el);
+  if (!active.moved) {
+    if (Math.hypot(cur[0] - active.down[0], cur[1] - active.down[1]) < 4) return;
+    active.moved = true;
+    if (ui.tool === 'pen' && active.pending) {
+      active.st = newStroke(); active.strokes.push(active.st); addHit(active.st, active.pending);
+    }
+  }
+  const [x0, y0] = active.last;
   const n = Math.max(1, Math.ceil(Math.hypot(cur[0] - x0, cur[1] - y0) / 3));
   const r = el.getBoundingClientRect();
   for (let k = 1; k <= n; k++) {
@@ -634,11 +688,29 @@ function moveAction(ev) {
 
 function endAction() {
   if (!active) return;
+  if (!active.moved && ui.tool === 'pen' && active.pending) focusFace(active.pending.f);
   if (active.erased.length) pushHistory({ type: 'remove', strokes: active.erased });
   const added = active.strokes.filter(s => s.pts.length);
   if (added.length) pushHistory({ type: 'add', strokes: added });
   active = null;
   saveStore();
+}
+
+// Rotate the camera (animated) so face f points straight at the viewer.
+let focusAnim = null;
+function focusFace(f) {
+  const to = new THREE.Vector3(...M.faces[f].n);
+  if (Math.abs(to.y) > 0.995) to.add(new THREE.Vector3(0.03, 0, 0.03)).normalize();  // avoid the orbit pole
+  const from = camera.position.clone().normalize();
+  focusAnim = { from, q: new THREE.Quaternion().setFromUnitVectors(from, to), dist: camera.position.length(), t0: performance.now() };
+}
+function stepFocus() {
+  if (!focusAnim) return;
+  const t = Math.min(1, (performance.now() - focusAnim.t0) / 450), k = t * t * (3 - 2 * t);
+  const q = new THREE.Quaternion().slerp(focusAnim.q, k);
+  camera.position.copy(focusAnim.from).applyQuaternion(q).multiplyScalar(focusAnim.dist);
+  camera.lookAt(controls.target);
+  if (t === 1) focusAnim = null;
 }
 
 function pushHistory(a) { M.undo.push(a); M.redo = []; }
@@ -708,15 +780,29 @@ function loadModel(id) {
   M = buildModel(def);
   const saved = store[def.id] || {};
   M.outer = saved.outer < M.faces.length ? saved.outer : defaultOuter(M);
-  M.eye = saved.eye || 0.8;
+  M.eye = saved.eye || 0.45;
+  M.spread = saved.spread || 1;
   M.strokes = (saved.strokes || []).map(s => ({ color: s.c, size: s.s, pts: s.p }))
     .filter(s => s.pts.every(p => p[0] < M.faces.length));
   M.undo = []; M.redo = [];
   hover = -1; setHoverMesh();
   document.getElementById('eye').value = Math.round(M.eye * 100);
+  document.getElementById('spread').value = Math.round(M.spread * 100);
   buildAtlas(); buildMesh(); paintAtlas();
-  buildSchlegel(); fit2D(); request2D();
+  buildSchlegel();
+  if (!saved.spread) { M.spread = autoSpread(); build2DShapes(); }
+  document.getElementById('spread').value = Math.round(M.spread * 100);
+  fit2D(); request2D();
   resetCamera(); updateStatus();
+}
+
+// Spread exponent that moves the median vertex of the straight diagram ~40% of the way out to the boundary.
+function autoSpread() {
+  const rho = M.V.map(v => { const q = proj(v), r = Math.hypot(...q); return r < 1e-9 ? 0 : r / rayToB([q[0] / r, q[1] / r]); })
+    .filter(x => x < 0.999).sort((a, b) => a - b);
+  const med = rho[rho.length >> 1];
+  if (!(med > 0 && med < 1)) return 0.6;
+  return Math.round(Math.min(0.6, Math.max(0.4, Math.log(0.42) / Math.log(med))) * 100) / 100;
 }
 
 function setOuter(f) {
@@ -777,8 +863,16 @@ document.getElementById('eye').addEventListener('input', e => {
   M.eye = e.target.value / 100; buildSchlegel(); fit2D(); request2D();
 });
 document.getElementById('eye').addEventListener('change', saveStore);
+document.getElementById('spread').addEventListener('input', e => {
+  M.spread = e.target.value / 100; build2DShapes(); request2D();
+});
+document.getElementById('spread').addEventListener('change', saveStore);
 document.getElementById('numbers').onclick = () => { ui.numbers = !ui.numbers; paintAtlas(); request2D(); syncButtons(); };
-document.getElementById('reset').onclick = () => { resetCamera(); fit2D(); request2D(); };
+document.getElementById('reset').onclick = () => {
+  M.spread = autoSpread(); build2DShapes();
+  document.getElementById('spread').value = Math.round(M.spread * 100);
+  resetCamera(); fit2D(); request2D(); saveStore();
+};
 
 function download(name, href) { const a = document.createElement('a'); a.href = href; a.download = name; a.click(); }
 document.getElementById('export').onclick = () => {
@@ -845,6 +939,7 @@ function resize() {
 new ResizeObserver(resize).observe(document.querySelector('main'));
 
 function loop() {
+  stepFocus();
   controls.update();
   if (M?.texDirty) { M.tex.needsUpdate = true; M.texDirty = false; }
   renderer.render(scene, camera);
