@@ -22,11 +22,19 @@ Draw on the faces of a convex polyhedron and see the drawing on its
 | Undo / redo | ⌘Z / ⇧⌘Z |
 | Change the diagram's outer face | **Set outer face…**, then click a face |
 | Enlarge the inner faces | **Spread** slider (far right = straight edges), **Eye** slider |
-| Save work | **Export JSON** / **Import JSON**, **Save PNGs** |
+| New drawing | **New** (N) |
+| Saved drawings | **My creations** (H): open, rename, delete or search them |
+| Back up / move to another browser | **Export JSON** / **Import JSON** |
+| Images | **Save PNGs** |
 
 The outer face of the Schlegel diagram is everything outside its boundary, so its drawings
 appear in the shaded ring around the diagram (the face turned inside-out).
-Drawings are saved in your browser per model; export JSON to keep a copy.
+Every drawing is a *creation*. It is saved automatically, as JSON in your browser's IndexedDB,
+each time you finish a stroke, so closing the tab loses nothing. A new drawing is first saved
+when you draw on it and gets a name like "Cube 3", which you can change under **My creations**.
+When the page opens it reopens your last creation. Picking a model from the menu opens your
+most recent drawing of that model.
+Creations live only in this browser: use **Export JSON** to keep a copy or move them elsewhere.
 
 ## Files
 
