@@ -747,6 +747,7 @@ function draw2D() {
   // strokes
   for (const st of M.strokes) for (const run of strokeRuns(st.pts)) drawRun2D(st, run);
   if (lineDraft?.view === '2d') dashLine(ctx2, lineStart(lineDraft), lineDraft.cur);
+  drawEraserCursor(ctx2, '2d');
 }
 const sub2 = (a, b) => [a[0] - b[0], a[1] - b[1]];
 
@@ -804,18 +805,58 @@ function addHit(st, h) {
   request2D();
 }
 
+const eraserRadius = () => 6 + ui.size * 2;
+
+// Distance from point s to segment ab (screen px).
+function segDist(s, a, b) {
+  const dx = b[0] - a[0], dy = b[1] - a[1], L = dx * dx + dy * dy;
+  const t = L ? Math.max(0, Math.min(1, ((s[0] - a[0]) * dx + (s[1] - a[1]) * dy) / L)) : 0;
+  return Math.hypot(s[0] - a[0] - t * dx, s[1] - a[1] - t * dy);
+}
+
+// Does stroke st pass within r px of screen point s in this view? Tests the segments between
+// stored points, not just the points: a straight line keeps only its end points on each face.
+function strokeNear(st, which, s, r) {
+  const pts = st.pts;
+  const at = p => which === '3d' ? screen3D(p) : w2s(to2D(p));
+  if (pts.length === 1) { const q = at(pts[0]); return !!q && Math.hypot(q[0] - s[0], q[1] - s[1]) <= r; }
+  for (let k = 1; k < pts.length; k++) {
+    const p = pts[k], prev = pts[k - 1];
+    if (p[0] !== prev[0]) continue;                   // the edge crossing itself has no length
+    // 3D keeps lines on a face straight; the 2D ring and spread bend them, so subdivide there
+    const steps = which === '3d' ? 1 : p[0] === M.outer ? 6 : M.spread === 1 ? 1 : 3;
+    let a = at(prev);
+    for (let j = 1; j <= steps; j++) {
+      const t = j / steps, b = at([p[0], prev[1] + (p[1] - prev[1]) * t, prev[2] + (p[2] - prev[2]) * t]);
+      if (a && b && segDist(s, a, b) <= r) return true;
+      a = b;
+    }
+  }
+  return false;
+}
+
 function eraseAt(which, s) {
-  const r = 6 + ui.size * 2;
-  const before = M.strokes.length;
+  const r = eraserRadius(), before = M.strokes.length;
   M.strokes = M.strokes.filter(st => {
-    const hitIt = st.pts.some(p => {
-      const q = which === '3d' ? screen3D(p) : w2s(to2D(p));
-      return q && Math.hypot(q[0] - s[0], q[1] - s[1]) <= r;
-    });
+    const hitIt = strokeNear(st, which, s, r);
     if (hitIt) active.erased.push(st);
     return !hitIt;
   });
-  if (M.strokes.length !== before) { paintAtlas(); request2D(); }
+  if (M.strokes.length !== before) { paintAtlas(); request2D(); updateStatus(); }
+}
+
+// Eraser outline under the pointer: { view, at: [x, y] } or null.
+let eraserCursor = null;
+function setEraserCursor(which, at) {
+  eraserCursor = ui.tool === 'eraser' && at ? { view: which, at } : null;
+  drawLinePreview3D(); request2D();
+}
+function drawEraserCursor(g, view) {
+  if (eraserCursor?.view !== view) return;
+  g.save();
+  g.lineWidth = 1.5; g.strokeStyle = 'rgba(0,0,0,.55)'; g.fillStyle = 'rgba(255,255,255,.25)';
+  g.beginPath(); g.arc(...eraserCursor.at, eraserRadius(), 0, 7); g.fill(); g.stroke();
+  g.restore();
 }
 
 function localXY(ev, el) { const r = el.getBoundingClientRect(); return [ev.clientX - r.left, ev.clientY - r.top]; }
@@ -881,7 +922,7 @@ function endAction() {
   if (added.length) pushHistory({ type: 'add', strokes: added });
   const changed = added.length || active.erased.length;
   active = null;
-  if (changed) scheduleSave();   // finished a stroke (or an erase): save the creation
+  if (changed) { scheduleSave(); updateStatus(); }   // finished a stroke (or an erase): save the creation
 }
 
 // ---------- straight lines ----------
@@ -937,11 +978,13 @@ function drawLinePreview3D() {
   octx.setTransform(dpr, 0, 0, dpr, 0, 0);
   octx.clearRect(0, 0, o3.width, o3.height);
   if (lineDraft?.view === '3d' && M) dashLine(octx, lineStart(lineDraft), lineDraft.cur);
+  drawEraserCursor(octx, '3d');
 }
 function drawLinePreview() { drawLinePreview3D(); request2D(); }
 
 function setTool(t) {
   ui.tool = t;
+  if (t !== 'eraser' && eraserCursor) setEraserCursor();
   if (lineDraft) { lineDraft = null; drawLinePreview(); updateStatus(); }
   syncButtons();
 }
@@ -968,7 +1011,7 @@ function applyHistory(a, forward) {
   const adding = (a.type === 'add') === forward;
   if (adding) M.strokes.push(...a.strokes);
   else M.strokes = M.strokes.filter(s => !a.strokes.includes(s));
-  paintAtlas(); request2D(); scheduleSave();
+  paintAtlas(); request2D(); scheduleSave(); updateStatus();
 }
 function undo() { const a = M.undo.pop(); if (a) { applyHistory(a, false); M.redo.push(a); } }
 function redo() { const a = M.redo.pop(); if (a) { applyHistory(a, true); M.undo.push(a); } }
@@ -982,13 +1025,14 @@ cv3.addEventListener('pointerdown', ev => {
   startAction('3d', ev);
 });
 cv3.addEventListener('pointermove', ev => {
+  if (ui.tool === 'eraser' || eraserCursor) setEraserCursor('3d', localXY(ev, cv3));
   if (active?.view === '3d') moveAction(ev);
   else if (!ev.buttons && M) {
     const h = hit3D(ev); setHover(h ? h.f : -1);
     if (lineDraft?.view === '3d') { lineDraft.cur = localXY(ev, cv3); drawLinePreview3D(); }
   }
 });
-cv3.addEventListener('pointerleave', () => { if (!active) setHover(-1); });
+cv3.addEventListener('pointerleave', () => { if (!active) setHover(-1); if (eraserCursor) setEraserCursor(); });
 
 let pan = null;
 c2.addEventListener('pointerdown', ev => {
@@ -998,6 +1042,7 @@ c2.addEventListener('pointerdown', ev => {
   if (ev.button === 0) startAction('2d', ev);
 });
 c2.addEventListener('pointermove', ev => {
+  if (ui.tool === 'eraser' || eraserCursor) setEraserCursor('2d', localXY(ev, c2));
   if (pan) {
     view.px += ev.clientX - pan.x; view.py += ev.clientY - pan.y;
     pan = { x: ev.clientX, y: ev.clientY }; request2D();
@@ -1007,7 +1052,7 @@ c2.addEventListener('pointermove', ev => {
     if (lineDraft?.view === '2d') { lineDraft.cur = localXY(ev, c2); request2D(); }
   }
 });
-c2.addEventListener('pointerleave', () => { if (!active) setHover(-1); });
+c2.addEventListener('pointerleave', () => { if (!active) setHover(-1); if (eraserCursor) setEraserCursor(); });
 c2.addEventListener('wheel', ev => {
   ev.preventDefault();
   const s = localXY(ev, c2), before = s2w(s);
