@@ -14,6 +14,7 @@ Draw on the faces of a convex polyhedron and see the drawing on its
 | Action | How |
 | --- | --- |
 | Draw | Left-drag in either view |
+| Straight line | **Line** (L), then click the start and end points (or drag) in either view; Esc cancels. The line is straight in the view you draw it in |
 | Turn a face to the front (3D) | Click it in either view |
 | Rotate 3D / pan 2D | Right-drag, hold Space, or toggle **Rotate/Pan** |
 | Zoom | Mouse wheel |

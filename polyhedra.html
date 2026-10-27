@@ -51,15 +51,18 @@
     position: absolute; left: 10px; top: 8px; font-size: 12px; color: var(--muted);
     pointer-events: none; background: rgba(255,255,255,.8); padding: 1px 6px; border-radius: 4px;
   }
+  /* One fixed-height line: if changing status text could wrap the footer, the views would
+     resize (and blank) every time the hovered face changes. */
   footer {
-    display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 16px;
-    padding: 0 14px 8px; color: var(--muted); font-size: 12px;
+    display: flex; justify-content: space-between; gap: 16px; height: 24px; align-items: center;
+    padding: 0 14px 6px; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden;
   }
-  #status { color: var(--ink); }
+  footer > span { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  #status { color: var(--ink); flex: 0 1 auto; }
   /* ---------- My creations ---------- */
-  #name { font-weight: 600; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #name { font-weight: 600; display: inline-block; width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #name.unsaved { color: var(--muted); font-weight: 400; font-style: italic; }
-  #saved { color: var(--muted); font-size: 12px; min-width: 52px; }
+  #saved { color: var(--muted); font-size: 12px; display: inline-block; width: 58px; }
   .count { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px; border-radius: 9px;
     background: var(--ink); color: #fff; font-size: 11px; line-height: 16px; text-align: center; }
   button.on .count { background: #fff; color: var(--ink); }
@@ -111,6 +114,7 @@
   <div class="grp"><span class="lbl">Size</span><input id="size" type="range" min="1" max="10" value="3"></div>
   <div class="grp">
     <button id="pen" class="on" title="Pen (P)">Pen</button>
+    <button id="line" title="Straight line: click the start point, then the end point (L)">Line</button>
     <button id="eraser" title="Eraser: removes whole strokes (E)">Eraser</button>
     <button id="rotate" title="Left-drag rotates the 3D view / pans the 2D view (R, or hold Space)">Rotate/Pan</button>
   </div>
@@ -140,7 +144,7 @@
   </div>
 </header>
 <main>
-  <div class="view" id="v3"><span class="tag">3D polyhedron</span></div>
+  <div class="view" id="v3"><canvas id="o3" style="pointer-events: none"></canvas><span class="tag">3D polyhedron</span></div>
   <div class="view" id="v2"><canvas id="c2"></canvas><span class="tag">Schlegel diagram</span></div>
 </main>
 <dialog id="history" aria-labelledby="htitle">
@@ -157,7 +161,7 @@
 </dialog>
 <footer>
   <span id="status"></span>
-  <span>Left-drag: draw · Click a face: turn it to the front · Right-drag: rotate (3D) / pan (2D) · Wheel: zoom · Space: hold to rotate/pan · 1–6: colours · ⌘Z: undo</span>
+  <span id="help">Left-drag: draw · L: straight line (click two points) · Click a face: turn it to the front · Right-drag: rotate (3D) / pan (2D) · Wheel: zoom · Space: hold to rotate/pan · 1–6: colours · ⌘Z: undo</span>
 </footer>
 
 <script type="module">
@@ -742,6 +746,7 @@ function draw2D() {
   ctx2.beginPath(); polyPath(B, 1 + RING); ctx2.stroke(); ctx2.setLineDash([]);
   // strokes
   for (const st of M.strokes) for (const run of strokeRuns(st.pts)) drawRun2D(st, run);
+  if (lineDraft?.view === '2d') dashLine(ctx2, lineStart(lineDraft), lineDraft.cur);
 }
 const sub2 = (a, b) => [a[0] - b[0], a[1] - b[1]];
 
@@ -776,6 +781,7 @@ function drawRun2D(st, run) {
 
 // ---------- drawing / erasing ----------
 let active = null;   // { view: '3d'|'2d', st, last: [x,y], erased: [] }
+let lineDraft = null; // Line tool after the first click: { view, A: hit, sA: [x,y], cur: [x,y] }
 
 function newStroke() {
   const st = { color: ui.color, size: ui.size, pts: [] };
@@ -826,6 +832,7 @@ function startAction(which, ev) {
     return;
   }
   const at = localXY(ev, which === '3d' ? renderer.domElement : c2);
+  if (ui.tool === 'line') { lineDown(which, at, h); return; }
   active = { view: which, last: at, down: at, moved: false, pending: h, erased: [], strokes: [] };
   if (ui.tool === 'eraser') eraseAt(which, at);
   // with the pen, the stroke only starts once the pointer moves: a plain click focuses the face
@@ -834,6 +841,11 @@ function startAction(which, ev) {
 function moveAction(ev) {
   const which = active.view, el = which === '3d' ? renderer.domElement : c2;
   const cur = localXY(ev, el);
+  if (active.line) {
+    if (Math.hypot(cur[0] - active.down[0], cur[1] - active.down[1]) >= 4) active.moved = true;
+    if (lineDraft) { lineDraft.cur = cur; drawLinePreview(); }
+    return;
+  }
   if (!active.moved) {
     if (Math.hypot(cur[0] - active.down[0], cur[1] - active.down[1]) < 4) return;
     active.moved = true;
@@ -857,6 +869,12 @@ function moveAction(ev) {
 
 function endAction() {
   if (!active) return;
+  if (active.line) {   // press-drag-release also draws a line
+    const dragged = active.moved;
+    active = null;
+    if (dragged && lineDraft) commitLine(lineDraft.cur);
+    return;
+  }
   if (!active.moved && ui.tool === 'pen' && active.pending) focusFace(active.pending.f);
   if (active.erased.length) pushHistory({ type: 'remove', strokes: active.erased });
   const added = active.strokes.filter(s => s.pts.length);
@@ -864,6 +882,68 @@ function endAction() {
   const changed = added.length || active.erased.length;
   active = null;
   if (changed) scheduleSave();   // finished a stroke (or an erase): save the creation
+}
+
+// ---------- straight lines ----------
+function lineDown(which, at, h) {
+  if (lineDraft && lineDraft.view === which) { commitLine(at); return; }   // second click
+  lineDraft = h ? { view: which, A: h, sA: at, cur: at } : null;
+  active = { view: which, line: true, down: at, moved: false, erased: [], strokes: [] };
+  drawLinePreview(); updateStatus();
+}
+
+// Current screen position of the line's start point in the view it was started in.
+function lineStart(d) {
+  const p = [d.A.f, d.A.a, d.A.b];
+  return d.view === '3d' ? screen3D(p) || d.sA : w2s(to2D(p));
+}
+
+// A line is straight in the view it is drawn in. Drawn in 3D it is also exactly straight on
+// every face it crosses (perspective keeps lines on a plane straight); drawn on the Schlegel
+// diagram it is straight there, and the 3D view shows the matching path on the solid.
+function commitLine(end) {
+  const d = lineDraft;
+  lineDraft = null; drawLinePreview(); updateStatus();
+  const el = d.view === '3d' ? cv3 : c2, r = el.getBoundingClientRect();
+  const hitXY = ([x, y]) => hitAt(d.view, { clientX: r.left + x, clientY: r.top + y });
+  const sA = lineStart(d), B = hitXY(end);
+  if (!B || Math.hypot(end[0] - sA[0], end[1] - sA[1]) < 2) return;
+  const strokes = [];
+  let st = null;
+  const n = Math.max(2, Math.ceil(Math.hypot(end[0] - sA[0], end[1] - sA[1]) / 3));
+  for (let k = 0; k <= n; k++) {
+    const h = k === 0 ? d.A : k === n ? B : hitXY(lerp2(sA, end, k / n));
+    if (!h) { st = null; continue; }            // passes off the model: leave a gap
+    if (!st) { st = newStroke(); strokes.push(st); }
+    addHit(st, h);
+  }
+  // in 3D, keep only where the line enters and leaves each face (exactly straight on each)
+  if (d.view === '3d') for (const s of strokes) s.pts = s.pts.filter((p, k, a) => k === 0 || k === a.length - 1 || p[0] !== a[k - 1][0] || p[0] !== a[k + 1][0]);
+  const kept = strokes.filter(s => s.pts.length > 1);
+  M.strokes = M.strokes.filter(s => !strokes.includes(s) || kept.includes(s));
+  paintAtlas(); request2D();
+  if (kept.length) { pushHistory({ type: 'add', strokes: kept }); scheduleSave(); updateStatus(); }
+}
+
+function dashLine(g, a, b) {
+  g.save();
+  g.strokeStyle = g.fillStyle = ui.color; g.lineWidth = 2; g.setLineDash([6, 5]);
+  g.beginPath(); g.moveTo(...a); g.lineTo(...b); g.stroke();
+  g.setLineDash([]); g.beginPath(); g.arc(...a, 3.5, 0, 7); g.fill();
+  g.restore();
+}
+function drawLinePreview3D() {
+  const dpr = window.devicePixelRatio || 1;
+  octx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  octx.clearRect(0, 0, o3.width, o3.height);
+  if (lineDraft?.view === '3d' && M) dashLine(octx, lineStart(lineDraft), lineDraft.cur);
+}
+function drawLinePreview() { drawLinePreview3D(); request2D(); }
+
+function setTool(t) {
+  ui.tool = t;
+  if (lineDraft) { lineDraft = null; drawLinePreview(); updateStatus(); }
+  syncButtons();
 }
 
 // Rotate the camera (animated) so face f points straight at the viewer.
@@ -895,6 +975,7 @@ function redo() { const a = M.redo.pop(); if (a) { applyHistory(a, true); M.undo
 
 // ---------- pointer wiring ----------
 const cv3 = renderer.domElement;
+const o3 = document.getElementById('o3'), octx = o3.getContext('2d');
 cv3.addEventListener('pointerdown', ev => {
   if (!M || ev.button !== 0 || ui.rotate || ui.space || active) return;
   cv3.setPointerCapture(ev.pointerId);
@@ -902,7 +983,10 @@ cv3.addEventListener('pointerdown', ev => {
 });
 cv3.addEventListener('pointermove', ev => {
   if (active?.view === '3d') moveAction(ev);
-  else if (!ev.buttons && M) { const h = hit3D(ev); setHover(h ? h.f : -1); }
+  else if (!ev.buttons && M) {
+    const h = hit3D(ev); setHover(h ? h.f : -1);
+    if (lineDraft?.view === '3d') { lineDraft.cur = localXY(ev, cv3); drawLinePreview3D(); }
+  }
 });
 cv3.addEventListener('pointerleave', () => { if (!active) setHover(-1); });
 
@@ -918,7 +1002,10 @@ c2.addEventListener('pointermove', ev => {
     view.px += ev.clientX - pan.x; view.py += ev.clientY - pan.y;
     pan = { x: ev.clientX, y: ev.clientY }; request2D();
   } else if (active?.view === '2d') moveAction(ev);
-  else if (!ev.buttons && M) { const h = hit2DWorld(s2w(localXY(ev, c2))); setHover(h ? h.f : -1); }
+  else if (!ev.buttons && M) {
+    const h = hit2DWorld(s2w(localXY(ev, c2))); setHover(h ? h.f : -1);
+    if (lineDraft?.view === '2d') { lineDraft.cur = localXY(ev, c2); request2D(); }
+  }
 });
 c2.addEventListener('pointerleave', () => { if (!active) setHover(-1); });
 c2.addEventListener('wheel', ev => {
@@ -947,6 +1034,7 @@ function defaultOuter(m) {
 
 // Load a model with a saved creation's drawing (or blank when `saved` is empty).
 function loadModel(id, saved = {}) {
+  lineDraft = null; drawLinePreview3D();
   const def = MODELS.find(m => m.id === id) || MODELS[0];
   M = buildModel(def);
   M.cid = saved.id || null; M.name = saved.name || null; M.created = saved.created || null;
@@ -1001,6 +1089,7 @@ function updateStatus() {
   let s = `${M.def.name} — V ${V} · E ${E} · F ${F} · ${M.strokes.length} stroke${M.strokes.length === 1 ? '' : 's'} · outer face #${M.outer}`;
   if (hover >= 0) s += ` · hovering face #${hover} (${POLY_NAME[M.faces[hover].idx.length] || M.faces[hover].idx.length + '-gon'})`;
   if (ui.picking) s = 'Click a face in either view to make it the outer face';
+  if (lineDraft) s = 'Line: click the end point (Esc cancels)';
   document.getElementById('status').textContent = s;
 }
 
@@ -1034,11 +1123,12 @@ const custom = document.createElement('input');
 custom.type = 'color'; custom.title = 'Custom colour'; custom.value = '#00a3a3';
 custom.addEventListener('input', () => setColor(custom.value));
 sw.append(custom);
-function setColor(c) { ui.color = c; ui.tool = 'pen'; syncButtons(); }
+function setColor(c) { ui.color = c; if (ui.tool === 'eraser') setTool('pen'); else syncButtons(); drawLinePreview(); }
 
 document.getElementById('size').addEventListener('input', e => { ui.size = +e.target.value; });
-document.getElementById('pen').onclick = () => { ui.tool = 'pen'; syncButtons(); };
-document.getElementById('eraser').onclick = () => { ui.tool = 'eraser'; syncButtons(); };
+document.getElementById('pen').onclick = () => setTool('pen');
+document.getElementById('line').onclick = () => setTool('line');
+document.getElementById('eraser').onclick = () => setTool('eraser');
 document.getElementById('rotate').onclick = () => { ui.rotate = !ui.rotate; setControlButtons(); syncButtons(); };
 document.getElementById('undo').onclick = undo;
 document.getElementById('redo').onclick = redo;
@@ -1093,11 +1183,12 @@ document.getElementById('png').onclick = () => {
 function syncButtons() {
   document.getElementById('pen').classList.toggle('on', ui.tool === 'pen');
   document.getElementById('eraser').classList.toggle('on', ui.tool === 'eraser');
+  document.getElementById('line').classList.toggle('on', ui.tool === 'line');
   document.getElementById('rotate').classList.toggle('on', ui.rotate);
   document.getElementById('numbers').classList.toggle('on', ui.numbers);
   document.getElementById('pick').classList.toggle('arm', ui.picking);
-  swatchEls.forEach((b, k) => b.classList.toggle('on', ui.tool === 'pen' && COLORS[k] === ui.color));
-  custom.style.outline = ui.tool === 'pen' && !COLORS.includes(ui.color) ? '2px solid var(--ink)' : 'none';
+  swatchEls.forEach((b, k) => b.classList.toggle('on', ui.tool !== 'eraser' && COLORS[k] === ui.color));
+  custom.style.outline = ui.tool !== 'eraser' && !COLORS.includes(ui.color) ? '2px solid var(--ink)' : 'none';
 }
 
 window.addEventListener('keydown', e => {
@@ -1109,12 +1200,13 @@ window.addEventListener('keydown', e => {
   if (e.code === 'Space') { e.preventDefault(); if (!ui.space) { ui.space = true; setControlButtons(); } return; }
   const k = e.key.toLowerCase();
   if (k >= '1' && k <= '6') setColor(COLORS[+k - 1]);
-  else if (k === 'p') { ui.tool = 'pen'; syncButtons(); }
-  else if (k === 'e') { ui.tool = 'eraser'; syncButtons(); }
+  else if (k === 'p') setTool('pen');
+  else if (k === 'l') setTool('line');
+  else if (k === 'e') setTool('eraser');
   else if (k === 'r') { ui.rotate = !ui.rotate; setControlButtons(); syncButtons(); }
   else if (k === 'n') startNew(M.def.id);
   else if (k === 'h') { e.preventDefault(); openHistory(); }   // don't type the "h" into the search box
-  else if (k === 'escape') { ui.picking = false; syncButtons(); updateStatus(); }
+  else if (k === 'escape') { ui.picking = false; lineDraft = null; drawLinePreview(); syncButtons(); updateStatus(); }
 });
 window.addEventListener('keyup', e => { if (e.code === 'Space') { ui.space = false; setControlButtons(); } });
 
@@ -1229,15 +1321,28 @@ document.getElementById('hsearch').addEventListener('input', renderHistory);
 hist.addEventListener('click', e => { if (e.target === hist) hist.close(); });   // click on the backdrop
 
 // ---------- layout + loop ----------
+// Resizing a canvas clears it, so only resize when the size really changed, and repaint
+// straight away instead of leaving a blank frame. The 2D view keeps its zoom and pan.
 function resize() {
+  const dpr = window.devicePixelRatio || 1;
   const r3 = v3.getBoundingClientRect();
-  renderer.setSize(r3.width, r3.height, false);
-  camera.aspect = r3.width / Math.max(1, r3.height); camera.updateProjectionMatrix();
-  const r2 = c2.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
-  view.w = r2.width; view.h = r2.height;
-  c2.width = Math.round(r2.width * dpr); c2.height = Math.round(r2.height * dpr);
-  if (M) fit2D();
-  request2D();
+  if (Math.round(r3.width * dpr) !== cv3.width || Math.round(r3.height * dpr) !== cv3.height) {
+    renderer.setSize(r3.width, r3.height, false);
+    camera.aspect = r3.width / Math.max(1, r3.height); camera.updateProjectionMatrix();
+    o3.width = Math.round(r3.width * dpr); o3.height = Math.round(r3.height * dpr);
+    renderer.render(scene, camera);
+    drawLinePreview3D();
+  }
+  const r2 = c2.getBoundingClientRect();
+  if (Math.round(r2.width * dpr) !== c2.width || Math.round(r2.height * dpr) !== c2.height) {
+    if (view.w > 1 && view.h > 1) {
+      const k = Math.min(r2.width, r2.height) / Math.min(view.w, view.h);
+      view.zoom *= k; view.px *= k; view.py *= k;
+    }
+    view.w = r2.width; view.h = r2.height;
+    c2.width = Math.round(r2.width * dpr); c2.height = Math.round(r2.height * dpr);
+    draw2D();
+  }
 }
 new ResizeObserver(resize).observe(document.querySelector('main'));
 
@@ -1246,6 +1351,7 @@ function loop() {
   controls.update();
   if (M?.texDirty) { M.tex.needsUpdate = true; M.texDirty = false; }
   renderer.render(scene, camera);
+  if (lineDraft?.view === '3d') drawLinePreview3D();
   if (need2D) { need2D = false; draw2D(); }
   requestAnimationFrame(loop);
 }
